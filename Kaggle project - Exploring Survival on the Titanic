@@ -1,0 +1,151 @@
+library(dplyr)
+library(ggplot2)
+library(randomForest)
+library(mice)
+library(scales)
+library(ggthemes)
+
+
+#### load dataset 
+train<- read.csv('./train (1).csv')
+test<- read.csv('./test (1).csv')
+
+####combine data
+full<- bind_rows(train,test)
+
+####Explore dataset
+str(full)
+
+
+
+##### Finding and imputing missing value (except Age)
+#1.Eembared
+which(full$Embarked == "")
+full[c(62,830), c('Fare','Embarked','Pclass')]
+embarked.df <- full[-c(62,830),]
+
+ggplot(embarked.df, aes(x= Embarked , y = Fare, fill = factor(Pclass)))+
+  geom_boxplot()+
+  geom_hline(aes(yintercept = 80), linetype = 'dashed', color = 'red')
+
+
+full$Embarked[c(62,830)] <- "C"
+
+
+#2. Fare
+which(is.na(full$Fare))
+full[1044,c('Embarked','Pclass')]
+median(full$Fare[full$Embarked =='S' & full$Pclass ==3], na.rm = TRUE)
+ggplot(full[full$Embarked == 'S' & full$Pclass == 3,], aes(x = Fare ))+
+  geom_density()+
+  geom_vline(aes(xintercept = 8.05), linetype = 'dashed', color = 'red')
+
+
+full$Fare[1044] <- 8.05
+
+
+
+
+##### Featuring Engineering
+#1.Title
+full$Title <- gsub('(.*, )|(\\..*)', '', full$Name)
+table(full$Title)
+rare_title<- c('Dona', 'Lady', 'the Countess','Capt', 'Col', 'Don', 
+               'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer')
+full$Title[full$Title == 'Mlle'] <- 'Miss' 
+full$Title[full$Title == 'Ms']  <- 'Miss'
+full$Title[full$Title == 'Mme'] <- 'Mrs' 
+
+full$Title[full$Title %in% rare_title] <- 'rare_title'
+table(full$Title,full$Sex)
+
+#2. Surname
+full$Surname <- sapply(full$Name, function(x)strsplit(x, split = "[,.]")[[1]][1])
+#3. Family memebers
+full$Fsize <- full$SibSp+full$Parch +1
+
+ggplot(full[!is.na(full$Survived), ], aes(x = Fsize , fill = factor(Survived)))+
+  geom_bar(stat = 'count', position = 'dodge')+
+  scale_x_continuous(breaks = seq(1,10,1))
+
+#4. Family size
+full$Fsized <- case_when(full$Fsize ==1 ~ 'Small',
+                         full$Fsize >1 & full$Fsize <=4 ~'Average', 
+                         full$Fsize >4 ~'Large')
+
+mosaicplot(table(full$Fsized,full$Survived), shade = TRUE)
+
+#5. Deck
+full$Deck <- factor(sapply(full$Cabin, function(x)strsplit(x, NULL)[[1]][1]))
+
+
+
+####Impute missing value Age
+factor_vars <- c('PassengerId','Pclass','Sex','Embarked',
+                 'Title','Surname','Fsized')
+
+full[factor_vars] <- lapply(full[factor_vars], function(x)as.factor(x))
+
+mice_model <- mice(full[,!names(full)%in%c('PassengerId','Name','Ticket','Cabin','Surname','Survived')], 
+                   method = 'rf')
+
+
+mice_model <- complete(mice_model)
+
+#CCompare mice model and original data
+g1<- ggplot(mice_model, aes(x = Age))+
+  geom_density()
+g2<- ggplot(full[!is.na(full$Age),], aes( x= Age))+
+  geom_density()
+
+full$Age <- mice_model$Age
+
+#### Further featuring engineering
+#1. Child
+full$Child <- ifelse(full$Age <18, 'child','none')
+table(full$Child,full$Survived)
+full$Child <- as.factor(full$Child)
+
+#2. Mother
+full$Mother <- ifelse(full$Age >18 & full$Parch >0 & full$Title != 'Miss' & full$Sex =='female','mother','none')
+table(full$Mother,full$Survived)
+full$Mother <- as.factor(full$Mother)
+md.pattern(full)
+
+
+
+####Split dataset into training data and testing data 
+train.df<- full[!is.na(full$Survived),]
+test.df<-full[is.na(full$Survived),]
+
+
+####Build randomforest model
+rf_model<- randomForest(factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + 
+                          Fare + Embarked + Title + 
+                          Fsized + Child + Mother,
+                        data = train.df)
+
+plot(rf_model)
+legend('topright', colnames(rf_model$err.rate), fill = 1:3)
+
+
+#Find important variable
+importance <- importance(rf_model)
+Importance <- data.frame(Variables = row.names(importance),
+                         Importance = round(importance[,1]))
+ranked_importance <- Importance%>%
+  mutate(Rank = dense_rank(desc(Importance)))
+
+
+ggplot(ranked_importance, aes(x = reorder(Variables,Importance), y = Importance, fill = Importance))+
+  geom_bar(stat = 'identity')+
+  coord_flip()+
+  geom_text(aes(x = Variables, y= 0.5,label = Rank), 
+            hjust = 0 , vjust = 0.5, color = 'red')+
+  labs(x = 'Variables')+
+  theme_classic()
+
+#### Predict the survival in test dataframe
+prediction<- predict(rf_model, test.df)
+submission <- data.frame(PassengerId = test.df$PassengerId, Survived = prediction) 
+
