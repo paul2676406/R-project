@@ -15,6 +15,7 @@ full<- bind_rows(train,test)
 
 ####Explore dataset
 str(full)
+sort(colSums(sapply(full,is.na)),decreasing = TRUE)
 
 
 
