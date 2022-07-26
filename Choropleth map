@@ -1,0 +1,27 @@
+```{r}
+library(sf)
+covid_cases <- read.csv('covid_full2.csv')
+
+covid_cases <- covid_cases%>%
+  select(1,3,4,6)%>%
+  group_by(city)%>%
+  summarise(total_cases = sum(total.cases))%>%
+  filter(city != '境外移入')%>%
+  mutate(city = str_replace_all(city,'台','臺'))
+
+
+tw_map <-read_sf('./shapefile/tw_map.shp')
+tw_map <- tw_map%>%
+  select(3,4,5)
+
+data <- tw_map%>%
+  left_join(covid_cases, by= c('COUNTYNAME'= 'city'))%>%
+  mutate(cases_number = cut(total_cases, breaks = c(0,10000,50000,100000,150000,200000,Inf),
+                            labels = c('<10000','10000~50000','50000~100000','100000~150000','150000~200000','>200000')))
+  
+ggplot()+
+  geom_sf(aes(fill = cases_number),color = 'white',data = data)+
+    labs(title = 'Taiwan total COVID cases by county',
+       subtitle = '2022/07/23',
+       caption = 'Source:COVID-19 Dashboard')+
+  scale_fill_viridis_d(guide = guide_legend(title= "Total cases"))
